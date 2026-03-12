@@ -19,6 +19,7 @@ if v:version < 702
 endif
 let s:keepcpo        = &cpo
 let g:loaded_ZoomWin = "v25n"
+let s:has_clipboard  = has("clipboard")
 if !exists("g:zoomwin_localoptlist")
     " Common local options to save/restore
     let s:localoptlist_common = [
@@ -200,17 +201,12 @@ fun! ZoomWin#ZoomWin()
         let l:ssop_keep = &ssop
         let &ssop     = 'blank,help,winsize,folds,globals,localoptions,options'
         exe 'mksession! ' .. fnameescape(s:sessionfile)
-        let l:keepyy= @@
-        let l:keepy0= @0
-        let l:keepy1= @1
-        let l:keepy2= @2
-        let l:keepy3= @3
-        let l:keepy4= @4
-        let l:keepy5= @5
-        let l:keepy6= @6
-        let l:keepy7= @7
-        let l:keepy8= @8
-        let l:keepy9= @9
+        " Save registers more efficiently
+        let l:save_reg = {}
+        for l:i in range(10)
+            let l:save_reg[l:i] = getreg(l:i)
+        endfor
+        let l:save_reg['unnamed'] = @@
         set lz ei=all bh=
         if v:version >= 700
             let l:curwin = winnr()
@@ -245,17 +241,11 @@ fun! ZoomWin#ZoomWin()
             w!
             bw!
         endif
-        let @@= l:keepyy
-        let @0= l:keepy0
-        let @1= l:keepy1
-        let @2= l:keepy2
-        let @3= l:keepy3
-        let @4= l:keepy4
-        let @5= l:keepy5
-        let @6= l:keepy6
-        let @7= l:keepy7
-        let @8= l:keepy8
-        let @9= l:keepy9
+        " Restore registers more efficiently
+        for l:i in range(10)
+            call setreg(l:i, l:save_reg[l:i])
+        endfor
+        let @@ = l:save_reg['unnamed']
         call histdel('search', -1)
         let @/ = histget('search', -1)
 
@@ -498,7 +488,7 @@ fun! s:SaveUserSettings()
     let s:keep_ss     = &ss
     let s:keep_wfh    = &wfh
     let s:keep_write  = &write
-    if has("clipboard")
+    if s:has_clipboard
         "   call Decho("@* save    before: s:keep_star=".@*)
         let s:keep_star   = @*
         "   call Decho("@* save    after : s:keep_star=".@*)
@@ -528,7 +518,7 @@ fun! s:RestoreUserSettings()
     let &ss    = s:keep_ss
     let &wfh   = s:keep_wfh
     let &write = s:keep_write
-    if has("clipboard") && exists("s:keep_star")
+    if s:has_clipboard && exists("s:keep_star")
         "   call Decho( "@* restore before: s:keep_star=".@*)
         let @*     = s:keep_star
         "   call Decho("@* restore after : s:keep_star=".@*)
@@ -549,9 +539,13 @@ fun! s:SaveWinSettings()
     "  call Dfunc("s:SaveWinSettings() curwin#".winnr())
     if exists("s:localoptlist") && !empty(s:localoptlist)
         let l:curwin= winnr()
+        " Build command string once, execute once per window (instead of once per option per window)
+        let l:cmd = 'let s:winlocal_{winnr()} = {'
         for l:localopt in s:localoptlist
-            noautocmd windo exe "let s:swv_" .. l:localopt .. "_{winnr()}= &" .. l:localopt
+            let l:cmd ..= "'" .. l:localopt .. "':&" .. l:localopt .. ','
         endfor
+        let l:cmd ..= '}'
+        noautocmd windo exe l:cmd
         exe "noautocmd " .. l:curwin .. "wincmd w"
     endif
     "  call Dret("s:SaveWinSettings : &bt=".&bt." s:swv_bt_".curwin."=".s:swv_bt_{curwin})
@@ -563,9 +557,13 @@ fun! s:RestoreWinSettings()
     "  call Dfunc("s:RestoreWinSettings() bh=".&bh." bt=".&bt." bl=".&bl)
     if exists("s:localoptlist") && !empty(s:localoptlist)
         let l:curwin= winnr()
+        " Build command to restore all settings at once per window
+        let l:cmd = 'if exists("s:winlocal_{winnr()}")|'
         for l:localopt in s:localoptlist
-            exe 'noautocmd windo if exists("s:swv_' .. l:localopt .. '_{winnr()}")|if &' .. l:localopt .. '!=# s:swv_' .. l:localopt .. '_{winnr()}|let &' .. l:localopt .. '= s:swv_' .. l:localopt .. '_{winnr()}|endif|unlet s:swv_' .. l:localopt .. '_{winnr()}|endif'
+            let l:cmd ..= 'if has_key(s:winlocal_{winnr()},"' .. l:localopt .. '")&&(&' .. l:localopt .. '!=#s:winlocal_{winnr()}["' .. l:localopt .. '"])|let &' .. l:localopt .. '=s:winlocal_{winnr()}["' .. l:localopt .. '"]|endif|'
         endfor
+        let l:cmd ..= 'unlet s:winlocal_{winnr()}|endif'
+        noautocmd windo exe l:cmd
         exe "noautocmd " .. l:curwin .. "wincmd w"
     endif
     "  call Dret("s:RestoreWinSettings : bh=".&bh." bt=".&bt." bl=".&bl)
@@ -576,10 +574,13 @@ endfun
 fun! s:RestoreOneWinSettings(wnum)
     "  call Dfunc("s:RestoreOneWinSettings(wnum=".a:wnum.") s:swv_bt_".a:wnum."=".s:swv_bt_{a:wnum}." bh=".&bh." bt=".&bt." bl=".&bl)
     if exists("s:localoptlist") && !empty(s:localoptlist)
+        " Build command to restore all settings at once
+        let l:cmd = 'if exists("s:winlocal_{' .. a:wnum .. '}")|'
         for l:localopt in s:localoptlist
-            "    call Decho('windo if exists("s:swv_'.localopt.'_{a:wnum}")|let &'.localopt.'= s:swv_'.localopt.'_{a:wnum}|unlet s:swv_'.localopt.'_{a:wnum}|endif')
-            exe 'noautocmd windo if exists("s:swv_' .. l:localopt .. '_{a:wnum}")|if &' .. l:localopt .. '!=# s:swv_' .. l:localopt .. '_{a:wnum}|let &' .. l:localopt .. '= s:swv_' .. l:localopt .. '_{a:wnum}|endif|unlet s:swv_' .. l:localopt .. '_{a:wnum}|endif'
+            let l:cmd ..= 'if has_key(s:winlocal_{' .. a:wnum .. '},"' .. l:localopt .. '")&&(&' .. l:localopt .. '!=#s:winlocal_{' .. a:wnum .. '}["' .. l:localopt .. '"])|let &' .. l:localopt .. '=s:winlocal_{' .. a:wnum .. '}["' .. l:localopt .. '"]|endif|'
         endfor
+        let l:cmd ..= 'unlet s:winlocal_{' .. a:wnum .. '}|endif'
+        noautocmd windo exe l:cmd
     endif
     "  call Dret("s:RestoreOneWinSettings : bh=".&bh." bt=".&bt." bl=".&bl)
 endfun
